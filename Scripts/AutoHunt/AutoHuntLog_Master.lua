@@ -1211,7 +1211,17 @@ Territories = {
     ["1240"]="",
     ["1241"]=""
   }
-  
+
+-- Aetheryte overrides for zones where Lifestream defaults to wrong destination
+-- Key: Zone name, Value: Aetheryte name to use instead
+local AetheryteOverrides = {
+    ["Coerthas Central Highlands"] = "Camp Dragonhead",
+    ["Southern Thanalan"] = "Little Ala Mhigo",
+    ["Middle La Noscea"] = "Zephyr Gate",
+    -- Add more overrides here as needed
+    -- Lifestream accepts aethernet gate names directly (e.g., "Zephyr Gate")
+}
+
 
 -------------------------------------------------
 -- MOB DATA (embedded)
@@ -13961,8 +13971,10 @@ local function NavigateTo(location, targetMobName)
             Sleep(1.0)  -- Extra buffer after combat
         end
 
-        Debug("Teleporting to " .. zoneName .. "...")
-        yield("/li " .. zoneName)
+        -- Check for aetheryte override (e.g., Camp Dragonhead instead of Foundation for Coerthas)
+        local teleportDest = AetheryteOverrides[zoneName] or zoneName
+        Debug("Teleporting to " .. teleportDest .. "...")
+        yield("/li " .. teleportDest)
         Sleep(1.0)
 
         local tpWait = 0
@@ -13980,8 +13992,8 @@ local function NavigateTo(location, targetMobName)
                 yield("/rotation cancel")
                 Sleep(1.0)
                 -- Retry teleport
-                Debug("Retrying teleport to " .. zoneName .. "...")
-                yield("/li " .. zoneName)
+                Debug("Retrying teleport to " .. teleportDest .. "...")
+                yield("/li " .. teleportDest)
                 Sleep(1.0)
             end
             Sleep(1.0)
@@ -14059,7 +14071,17 @@ local function NavigateTo(location, targetMobName)
     local stuckRetries = 0
     local maxStuckRetries = 5
 
-    while IPC.vnavmesh.IsRunning() and moveWait < 120 do
+    while moveWait < 120 do
+        -- Check if vnav stopped (arrived or failed)
+        if not IPC.vnavmesh.IsRunning() then
+            -- Give it a moment to see if it's just between commands
+            Sleep(0.5)
+            if not IPC.vnavmesh.IsRunning() then
+                Debug("Navigation stopped (arrived or path ended)")
+                break
+            end
+        end
+
         Sleep(1.0)
         moveWait = moveWait + 1
 
@@ -14075,57 +14097,87 @@ local function NavigateTo(location, targetMobName)
             if stuckTime >= 2 then
                 stuckRetries = stuckRetries + 1
                 Debug("Stuck detected (attempt " .. stuckRetries .. "/" .. maxStuckRetries .. ")")
-                IPC.vnavmesh.Stop()
-                Sleep(0.3)
-
-                -- Dismount to check for nearby target
-                if Svc.Condition[4] then
-                    yield("/gaction Dismount")
-                    Sleep(0.5)
-                end
-
-                -- Check if target mob is nearby
-                if targetMobName then
-                    yield("/target \"" .. targetMobName .. "\"")
-                    Sleep(0.3)
-                    if Entity.Target and Entity.Target.Name == targetMobName then
-                        Debug("Target found nearby! Stopping navigation.")
-                        return true  -- Success - mob is close enough
-                    end
-                end
 
                 -- Give up after max retries
                 if stuckRetries >= maxStuckRetries then
+                    IPC.vnavmesh.Stop()
                     Debug("Stuck " .. maxStuckRetries .. " times, giving up on this location")
                     return false
                 end
 
-                -- Try to unstick: jump while moving forward
-                yield("/send W <down>")  -- Start moving forward
-                Sleep(0.1)
-                yield("/gaction Jump")
-                Sleep(0.5)
-                yield("/send W <up>")    -- Stop moving forward
-                Sleep(0.3)
+                -- First few attempts: just jump while vnav keeps moving us forward
+                if stuckRetries <= 3 then
+                    Debug("Attempting unstick: jump (vnav still moving)")
+                    yield("/gaction Jump")
+                    Sleep(0.8)
+                    stuckTime = 0
+                    lastX, lastZ = Entity.Player.Position.X, Entity.Player.Position.Z
+                else
+                    -- After 3 failed jumps: stop, reload navmesh, and restart
+                    Debug("Jump didn't help, reloading navmesh...")
+                    IPC.vnavmesh.Stop()
+                    Sleep(0.3)
 
-                -- Remount
-                if not Svc.Condition[4] then
-                    yield("/gaction \"Mount Roulette\"")
+                    -- Dismount to check for nearby target
+                    if Svc.Condition[4] then
+                        yield("/gaction Dismount")
+                        Sleep(0.5)
+                    end
+
+                    -- Check if target mob is nearby
+                    if targetMobName then
+                        yield("/target \"" .. targetMobName .. "\"")
+                        Sleep(0.3)
+                        if Entity.Target and Entity.Target.Name == targetMobName then
+                            Debug("Target found nearby! Stopping navigation.")
+                            return true  -- Success - mob is close enough
+                        end
+                    end
+
+                    -- Reload navmesh to find a different path
+                    yield("/vnav reload")
                     Sleep(1.0)
+
+                    -- Remount
                     if not Svc.Condition[4] then
-                        yield("/mount \"Company Chocobo\"")
+                        yield("/gaction \"Mount Roulette\"")
+                        Sleep(1.5)
+                        if not Svc.Condition[4] then
+                            yield("/mount \"Company Chocobo\"")
+                            Sleep(1.5)
+                        end
+                    end
+
+                    -- Restart navigation
+                    Debug("Restarting navigation...")
+                    if Z then
+                        yield("/vnav moveto " .. X .. " " .. Y .. " " .. Z)
+                    else
+                        yield("/vnav moveflag")
+                    end
+
+                    -- Wait for vnav to actually start
+                    local startWait = 0
+                    while not IPC.vnavmesh.IsRunning() and startWait < 5 do
+                        Sleep(0.5)
+                        startWait = startWait + 1
+                    end
+
+                    if not IPC.vnavmesh.IsRunning() then
+                        Debug("Navigation failed to restart, rebuilding navmesh...")
+                        yield("/vnav rebuild")
+                        Sleep(2.0)
+                        if Z then
+                            yield("/vnav moveto " .. X .. " " .. Y .. " " .. Z)
+                        else
+                            yield("/vnav moveflag")
+                        end
                         Sleep(1.0)
                     end
-                end
 
-                -- Restart navigation
-                if Z then
-                    yield("/vnav moveto " .. X .. " " .. Y .. " " .. Z)
-                else
-                    yield("/vnav moveflag")
+                    stuckTime = 0
+                    lastX, lastZ = Entity.Player.Position.X, Entity.Player.Position.Z
                 end
-                Sleep(0.5)
-                stuckTime = 0
             end
         end
     end
@@ -14175,9 +14227,9 @@ local function KillMobs(mobName, count)
         else
             noTargetCount = 0
 
-            -- Move closer if too far (max attack range ~25y)
+            -- Move closer if too far (melee needs ~3y, ranged ~25y, use 5y as safe threshold)
             local targetDist = Entity.Target.DistanceTo
-            if targetDist and targetDist > 20 then
+            if targetDist and targetDist > 5 then
                 Debug("  Target at " .. string.format("%.1f", targetDist) .. "y, moving closer...")
                 local tX = Entity.Target.Position.X
                 local tY = Entity.Target.Position.Y
@@ -14185,7 +14237,7 @@ local function KillMobs(mobName, count)
                 yield("/vnav moveto " .. tX .. " " .. tY .. " " .. tZ)
                 Sleep(0.5)
                 local closeWait = 0
-                while IPC.vnavmesh.IsRunning() and Entity.Target and Entity.Target.DistanceTo > 10 and closeWait < 10 do
+                while IPC.vnavmesh.IsRunning() and Entity.Target and Entity.Target.DistanceTo > 3 and closeWait < 15 do
                     Sleep(0.5)
                     closeWait = closeWait + 1
                 end
@@ -14205,6 +14257,16 @@ local function KillMobs(mobName, count)
                 if combatWait == 5 then
                     yield("/rotation manual")
                 end
+                -- If still not in combat after a few tries, move even closer
+                if combatWait == 7 and Entity.Target then
+                    local dist = Entity.Target.DistanceTo
+                    if dist and dist > 3 then
+                        Debug("  Combat not starting, moving closer...")
+                        yield("/vnav movetarget")
+                        Sleep(1.0)
+                        IPC.vnavmesh.Stop()
+                    end
+                end
             end
 
             -- Wait for kill
@@ -14218,9 +14280,24 @@ local function KillMobs(mobName, count)
                 end
             end
 
+            -- Check if target was lost mid-fight (not actually dead)
             if not Entity.Target then
-                killCount = killCount + 1
-                Debug("  Kill " .. killCount .. "/" .. count)
+                -- If still in combat, target might have just been lost - try to retarget
+                if Svc.Condition[26] then
+                    Debug("  Target lost but still in combat, retargeting...")
+                    yield("/target \"" .. mobName .. "\"")
+                    Sleep(0.3)
+                    if not Entity.Target then
+                        -- Try targeting any enemy
+                        yield("/targetenemy")
+                        Sleep(0.3)
+                    end
+                    -- Don't count as kill, loop will continue
+                else
+                    -- Out of combat = mob is dead
+                    killCount = killCount + 1
+                    Debug("  Kill " .. killCount .. "/" .. count)
+                end
             end
             Sleep(0.5)
         end
@@ -14327,12 +14404,34 @@ local function IsHuntLogComplete(class, rank)
 
     -- Select the class tab (callback to switch)
     yield("/callback MonsterNote true 0 " .. class)
+    Sleep(0.5)  -- Wait longer for tab switch
+
+    -- Re-get addon after tab switch
+    addon = Addons.GetAddon("MonsterNote")
     Sleep(0.3)
 
     -- Read the rank completion text (node 33, rank index, child 3)
     -- Format is "X/Y" where X is completed entries, Y is total
     local rankNode = addon:GetNode(33, rank, 3)
     local rankText = rankNode and rankNode.Text or ""
+
+    -- Debug: if empty, try alternate node paths
+    if rankText == "" then
+        Debug("Node 33," .. rank .. ",3 returned empty, trying alternates...")
+        -- Try without child index
+        rankNode = addon:GetNode(33, rank)
+        if rankNode then
+            rankText = rankNode.Text or ""
+            Debug("Node 33," .. rank .. " text: " .. rankText)
+        end
+        -- Try different parent nodes
+        for nodeId = 30, 36 do
+            local testNode = addon:GetNode(nodeId, rank, 3)
+            if testNode and testNode.Text and testNode.Text ~= "" then
+                Debug("Found text at node " .. nodeId .. "," .. rank .. ",3: " .. testNode.Text)
+            end
+        end
+    end
 
     -- Close hunt log
     yield("/callback MonsterNote true -1")
@@ -14350,26 +14449,41 @@ local function IsHuntLogComplete(class, rank)
     end
 end
 
--- Get the next incomplete GC hunt log rank (1, 2, or 3), or nil if all complete
+-- Get the next incomplete GC hunt log rank by checking which mobs are incomplete
+-- Uses the same GetIncompleteMobs() logic that already works
 local function GetNextIncompleteGCRank()
     local gcRank = GetGCRank()
 
-    -- Check rank 1 (index 0)
-    if not IsHuntLogComplete(9, 0) then
+    -- Get incomplete mobs (reuses the working GetIncompleteMobs logic)
+    local incompleteMobs = GetIncompleteMobs()
+
+    if not incompleteMobs or #incompleteMobs == 0 then
+        Debug("No incomplete mobs found - all GC ranks complete")
+        return nil
+    end
+
+    Debug("Found " .. #incompleteMobs .. " incomplete mobs, determining rank...")
+
+    -- Check which rank has incomplete mobs by looking at the mob names
+    -- We need to check against the GC dungeon data to see which rank needs dungeons
+    for _, mob in ipairs(incompleteMobs) do
+        local loc = mobLookup[mob.name]
+        if not loc then
+            -- This is a dungeon mob (no overworld location)
+            -- Check which dungeon/rank it belongs to by name matching
+            Debug("Dungeon mob found: " .. mob.name)
+        end
+    end
+
+    -- For now, if there are incomplete mobs with no location, determine rank by GC rank
+    -- Rank 1 dungeons at GC rank 4, Rank 2 dungeons at GC rank 5-8, Rank 3 at 9+
+    if gcRank < 5 then
         return 1
-    end
-
-    -- Check rank 2 (index 1) - need GC rank 5+ to access
-    if gcRank >= 5 and not IsHuntLogComplete(9, 1) then
+    elseif gcRank < 9 then
         return 2
-    end
-
-    -- Check rank 3 (index 2) - need GC rank 9+ to access
-    if gcRank >= 9 and not IsHuntLogComplete(9, 2) then
+    else
         return 3
     end
-
-    return nil  -- All complete or can't access higher ranks
 end
 
 -- Check if rank 8 quest is complete
@@ -14784,8 +14898,8 @@ end
 if Settings.do_extra_dungeons and Player.GrandCompany > 0 then
     local gcRank = GetGCRank()
 
-    -- Only do extra dungeons if rank 2 log is complete and we're working toward rank 9
-    if IsHuntLogComplete(9, 1) and gcRank >= 5 then
+    -- Only do extra dungeons if we're at rank 9+ (rank 2 log must be complete to reach rank 9)
+    if gcRank >= 9 then
         Debug("")
         Debug("=== Extra Dungeons for Rank 9 ===")
         DoExtraDungeons()
