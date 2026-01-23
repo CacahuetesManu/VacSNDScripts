@@ -69,9 +69,6 @@ Conversion formula for 2D → raw: `raw = (mapCoord * 50) - 25 - 1024`
 ### Hunt Log Reading
 Uses `Addons.GetAddon("MonsterNote"):GetAtkValue()` to read mob names (indices 80-130) and progress (indices 160-210).
 
-### API Reference
-See `/home/manny/Documents/FFXIV/VacSNDScripts/SND_API_REFERENCE.md` for the modern SND API documentation.
-
 ### Key APIs Used
 | Purpose | API |
 |---------|-----|
