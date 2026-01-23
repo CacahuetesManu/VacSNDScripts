@@ -1,8 +1,10 @@
 # Acknowledgements
 
-Super thank you to Muffin and Friendly <AutoParty> for working on this and keeping up with it while I was not here. 
+Super thank you to Muffin and Friendly (AutoParty) for working on this and keeping up with it while I was not here. 
 
-Friendly (ping me) <AutoParty>, will try to help with bugs. Don't ping Wiggly for this script.
+Friendly (AutoParty), will try to help with bugs. Don't ping Wiggly for this script.
+
+CacahuetesManu may help with this script too, but my availability isn't all that good. 
 
 # AutoHuntLog
 
