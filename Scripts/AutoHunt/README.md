@@ -1,4 +1,4 @@
-#Acknolegements
+# Acknowledgements
 
 Super thank you to Muffin and Friendly <AutoParty> for working on this and keeping up with it while I was not here. 
 
