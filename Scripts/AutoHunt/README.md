@@ -1,3 +1,8 @@
+#Acknolegements
+Super thank you to Muffin and Friendly <AutoParty> for working on this and keeping up with it while I was not here. 
+
+Friendly (ping me) <AutoParty>, will try to help with bugs. Don't ping Wiggly for this script.
+
 # AutoHuntLog
 
 Automated hunt log completion script for FFXIV using SND (SomethingNeedDoing).
