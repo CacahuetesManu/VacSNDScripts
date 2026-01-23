@@ -7,8 +7,64 @@
     3. Navigate to location
     4. Kill required mobs
     5. Repeat until all complete
+
+    For GC hunt logs, also supports:
+    - Dungeon mobs via AutoDuty
+    - GC rank-up quest completion via Questionable
 ]]
 
+-------------------------------------------------
+-- SETTINGS
+-------------------------------------------------
+local Settings = {
+    -- Hunt Log Type
+    hunt_type = "gc",          -- "class" for current job's hunt log, "gc" for Grand Company
+
+    -- GC Dungeon Settings (only used when hunt_type = "gc")
+    do_dungeons = true,           -- Run dungeons for GC hunt log mobs
+    do_extra_dungeons = true,     -- Run Dzemael Darkhold / Aurum Vale for rank 9
+    stop_at_rank_two = false,     -- Stop after rank 2 (skip rank 3)
+    duty_timer_limit = 20,        -- Minutes before abandoning a dungeon
+
+    -- Rank-up Settings (only used when hunt_type = "gc")
+    do_rankup = true,             -- Attempt to rank up after completing logs
+
+    -- Movement Settings
+    mount_name = "Company Chocobo"  -- Fallback mount if Mount Roulette fails
+}
+
+-------------------------------------------------
+-- ClassJob ID to Hunt Log Index mapping
+-------------------------------------------------
+-- Maps game ClassJob IDs to hunt log callback indices
+-- AtkValue test order: GLA, PGL, MRD, LNC, ARC, ROG, CNJ, THM, ACN, GC
+local ClassJobToHuntLog = {
+    -- Base classes
+    [1] = 0,   -- GLA -> index 0
+    [2] = 1,   -- PGL -> index 1
+    [3] = 2,   -- MRD -> index 2
+    [4] = 3,   -- LNC -> index 3
+    [5] = 4,   -- ARC -> index 4
+    [29] = 5,  -- ROG -> index 5
+    [6] = 6,   -- CNJ -> index 6
+    [7] = 7,   -- THM -> index 7
+    [26] = 8,  -- ACN -> index 8
+    -- Jobs (map to their base class)
+    [19] = 0,  -- PLD -> GLA
+    [20] = 1,  -- MNK -> PGL
+    [21] = 2,  -- WAR -> MRD
+    [22] = 3,  -- DRG -> LNC
+    [23] = 4,  -- BRD -> ARC
+    [30] = 5,  -- NIN -> ROG
+    [24] = 6,  -- WHM -> CNJ
+    [25] = 7,  -- BLM -> THM
+    [27] = 8,  -- SMN -> ACN
+    [28] = 8,  -- SCH -> ACN
+}
+
+-------------------------------------------------
+-- CORE FUNCTIONS
+-------------------------------------------------
 local function Debug(msg)
     yield("/echo [Hunt] " .. tostring(msg))
 end
@@ -18,6 +74,26 @@ local function Sleep(s)
 end
 
 Debug("=== AutoHuntLog Master ===")
+
+-- Hunt log index names (matches AtkValue test order)
+local HuntLogNames = {[0]="GLA",[1]="PGL",[2]="MRD",[3]="LNC",[4]="ARC",[5]="ROG",[6]="CNJ",[7]="THM",[8]="ACN",[9]="GC"}
+
+-- Get current class hunt log index from player's job
+local function GetCurrentClassIndex()
+    return ClassJobToHuntLog[Player.Job.Id]
+end
+
+-- Show configured hunt type
+if Settings.hunt_type == "gc" then
+    Debug("Mode: Grand Company hunt logs")
+else
+    local classIdx = GetCurrentClassIndex()
+    if classIdx then
+        Debug("Mode: Class hunt logs (" .. (HuntLogNames[classIdx] or "Unknown") .. ")")
+    else
+        Debug("Mode: Class hunt logs (unsupported job - no hunt log)")
+    end
+end
 
 -------------------------------------------------
 -- TERRITORY LOOKUP (embedded)
@@ -11473,8 +11549,8 @@ Territories = {
                                             Map = 4,
                                             Terri = 148,
                                             Zone = 0,
-                                            xCoord = 27.8,
-                                            yCoord = 23.9
+                                            xCoord = 27.4,
+                                            yCoord = 23.1
                                         }
                                     },
                                     Name = "Syrphid Swarm"
@@ -13746,6 +13822,22 @@ Territories = {
 
 
 -------------------------------------------------
+-- Class names for hunt log display
+-------------------------------------------------
+local ClassNames = {
+    [0] = "GLA",  -- Gladiator
+    [1] = "PGL",  -- Pugilist
+    [2] = "MRD",  -- Marauder
+    [3] = "LNC",  -- Lancer
+    [4] = "ARC",  -- Archer
+    [5] = "ROG",  -- Rogue
+    [6] = "CNJ",  -- Conjurer
+    [7] = "THM",  -- Thaumaturge
+    [8] = "ACN",  -- Arcanist
+    [9] = "GC"    -- Grand Company
+}
+
+-------------------------------------------------
 -- Build mob lookup table (name -> location)
 -------------------------------------------------
 Debug("Building mob database...")
@@ -13790,16 +13882,32 @@ local function GetIncompleteMobs()
         return nil
     end
 
-    yield("/callback MonsterNote true 2 2")  -- Filter incomplete
+    -- Select the correct class tab based on settings
+    local targetClass = Settings.hunt_type == "gc" and 9 or GetCurrentClassIndex()
+    if not targetClass then
+        Debug("ERROR: Current job has no hunt log!")
+        return nil
+    end
+    yield("/callback MonsterNote true 0 " .. targetClass)
     Sleep(0.3)
 
+    yield("/callback MonsterNote true 2 2")  -- Filter incomplete
+    Sleep(0.5)  -- Longer wait for filter to apply
+
+    -- Get current class for display
+    local className = ClassNames[targetClass] or "Unknown"
+    Debug("Scanning " .. className .. " hunt log...")
+
     local mobs = {}
-    for nameIdx = 80, 130 do
+    local totalFound = 0
+    for nameIdx = 79, 130 do
         local atkVal = addon:GetAtkValue(nameIdx)
         if atkVal and atkVal.ValueString and atkVal.ValueString ~= "" then
+            totalFound = totalFound + 1
             local mobName = atkVal.ValueString
             local progressVal = addon:GetAtkValue(nameIdx + 80)
             local progressStr = progressVal and progressVal.ValueString or "0/0"
+
             local current, total = progressStr:match("(%d+)/(%d+)")
             current = tonumber(current) or 0
             total = tonumber(total) or 0
@@ -13816,6 +13924,8 @@ local function GetIncompleteMobs()
         end
     end
 
+    Debug("Found " .. #mobs .. " incomplete mobs")
+
     yield("/callback MonsterNote true -1")  -- Close
     Sleep(0.2)
 
@@ -13825,7 +13935,7 @@ end
 -------------------------------------------------
 -- Helper: Navigate to location
 -------------------------------------------------
-local function NavigateTo(location)
+local function NavigateTo(location, targetMobName)
     local ZONE_ID = location.Terri
     local MAP_ID = location.Map
     local X = location.xCoord
@@ -13837,12 +13947,43 @@ local function NavigateTo(location)
     -- Teleport if needed
     local currentZone = Svc.ClientState.TerritoryType
     if currentZone ~= ZONE_ID then
+        -- Wait for combat to end before teleporting
+        if Svc.Condition[26] then
+            Debug("In combat, fighting before teleport...")
+            yield("/battletarget")
+            Sleep(0.3)
+            yield("/rotation manual")
+            while Svc.Condition[26] do
+                yield("/battletarget")
+                Sleep(1.0)
+            end
+            yield("/rotation cancel")
+            Sleep(1.0)  -- Extra buffer after combat
+        end
+
         Debug("Teleporting to " .. zoneName .. "...")
         yield("/li " .. zoneName)
         Sleep(1.0)
 
         local tpWait = 0
         while Svc.ClientState.TerritoryType ~= ZONE_ID and tpWait < 60 do
+            -- Check if combat interrupted teleport
+            if Svc.Condition[26] then
+                Debug("Combat interrupted teleport, fighting...")
+                yield("/battletarget")
+                Sleep(0.3)
+                yield("/rotation manual")
+                while Svc.Condition[26] do
+                    yield("/battletarget")
+                    Sleep(1.0)
+                end
+                yield("/rotation cancel")
+                Sleep(1.0)
+                -- Retry teleport
+                Debug("Retrying teleport to " .. zoneName .. "...")
+                yield("/li " .. zoneName)
+                Sleep(1.0)
+            end
             Sleep(1.0)
             tpWait = tpWait + 1
         end
@@ -13851,6 +13992,20 @@ local function NavigateTo(location)
             Sleep(0.3)
         end
         Sleep(0.5)
+
+        -- Check for combat after zone load
+        if Svc.Condition[26] then
+            Debug("In combat after teleport, fighting...")
+            yield("/battletarget")
+            Sleep(0.3)
+            yield("/rotation manual")
+            while Svc.Condition[26] do
+                yield("/battletarget")
+                Sleep(1.0)
+            end
+            yield("/rotation cancel")
+            Sleep(1.0)
+        end
 
         if Svc.ClientState.TerritoryType ~= ZONE_ID then
             Debug("ERROR: Teleport failed")
@@ -13901,6 +14056,8 @@ local function NavigateTo(location)
     local moveWait = 0
     local lastX, lastZ = Entity.Player.Position.X, Entity.Player.Position.Z
     local stuckTime = 0
+    local stuckRetries = 0
+    local maxStuckRetries = 5
 
     while IPC.vnavmesh.IsRunning() and moveWait < 120 do
         Sleep(1.0)
@@ -13916,11 +14073,51 @@ local function NavigateTo(location)
         else
             stuckTime = stuckTime + 1
             if stuckTime >= 2 then
-                Debug("Stuck detected, attempting unstuck...")
+                stuckRetries = stuckRetries + 1
+                Debug("Stuck detected (attempt " .. stuckRetries .. "/" .. maxStuckRetries .. ")")
                 IPC.vnavmesh.Stop()
                 Sleep(0.3)
+
+                -- Dismount to check for nearby target
+                if Svc.Condition[4] then
+                    yield("/gaction Dismount")
+                    Sleep(0.5)
+                end
+
+                -- Check if target mob is nearby
+                if targetMobName then
+                    yield("/target \"" .. targetMobName .. "\"")
+                    Sleep(0.3)
+                    if Entity.Target and Entity.Target.Name == targetMobName then
+                        Debug("Target found nearby! Stopping navigation.")
+                        return true  -- Success - mob is close enough
+                    end
+                end
+
+                -- Give up after max retries
+                if stuckRetries >= maxStuckRetries then
+                    Debug("Stuck " .. maxStuckRetries .. " times, giving up on this location")
+                    return false
+                end
+
+                -- Try to unstick: jump while moving forward
+                yield("/send W <down>")  -- Start moving forward
+                Sleep(0.1)
                 yield("/gaction Jump")
                 Sleep(0.5)
+                yield("/send W <up>")    -- Stop moving forward
+                Sleep(0.3)
+
+                -- Remount
+                if not Svc.Condition[4] then
+                    yield("/gaction \"Mount Roulette\"")
+                    Sleep(1.0)
+                    if not Svc.Condition[4] then
+                        yield("/mount \"Company Chocobo\"")
+                        Sleep(1.0)
+                    end
+                end
+
                 -- Restart navigation
                 if Z then
                     yield("/vnav moveto " .. X .. " " .. Y .. " " .. Z)
@@ -14036,6 +14233,447 @@ local function KillMobs(mobName, count)
 end
 
 -------------------------------------------------
+-- GC & DUNGEON SUPPORT
+-------------------------------------------------
+
+-- GC Quest IDs for rank requirements
+local GCQuestData = {
+    -- Rank 8 unlock quests ("Shadows Uncast" equivalents)
+    rank8Quests = {
+        [1] = 66664,  -- Maelstrom
+        [2] = 66665,  -- Twin Adders
+        [3] = 66666   -- Immortal Flames
+    },
+    -- Rank 9 unlock quests ("Gilding the Bilious" equivalents)
+    rank9Quests = {
+        [1] = 66667,  -- Maelstrom
+        [2] = 66668,  -- Twin Adders
+        [3] = 66669   -- Immortal Flames
+    },
+    -- Extra dungeon quests (Dzemael Darkhold / Aurum Vale)
+    extraQuests = {
+        [1] = {1128, 1131},  -- Maelstrom
+        [2] = {1129, 1132},  -- Twin Adders
+        [3] = {1130, 1133}   -- Immortal Flames
+    }
+}
+
+-- Dungeon data per hunt log rank
+local GCDungeonData = {
+    [1] = {
+        default = "Halatali",
+        contentId = 1245,              -- AutoDuty content ID
+        unlockQuest = 66233,           -- Game quest ID for completion check
+        unlockQuestQst = 697,          -- Questionable quest ID for /qst command
+        unlockQuestName = "Hallo Halatali"
+    },
+    [2] = {
+        default = "The Sunken Temple of Qarn",
+        flames = "Cutter's Cry",  -- Immortal Flames uses different dungeon
+        contentId = 1267,              -- AutoDuty content ID for Qarn
+        flamesContentId = 1303,        -- AutoDuty content ID for Cutter's Cry
+        unlockQuest = 66300,           -- Game quest ID for Braving New Depths
+        unlockQuestQst = 764,
+        unlockQuestName = "Braving New Depths",
+        flamesUnlockQuest = 66457,     -- Game quest ID for Dishonor Before Death
+        flamesUnlockQuestQst = 921,
+        flamesUnlockQuestName = "Dishonor Before Death"
+    },
+    [3] = {
+        default = "The Wanderer's Palace",
+        contentId = nil,               -- Not available in AutoDuty yet
+        unlockQuest = 66406,           -- Game quest ID for Trauma Queen
+        unlockQuestQst = 870,          -- Questionable quest ID
+        unlockQuestName = "Trauma Queen"
+    }
+}
+
+-- Extra dungeons for rank 9
+local ExtraDungeons = {
+    {name = "Dzemael Darkhold", contentId = 1330},
+    {name = "The Aurum Vale", contentId = 1331}
+}
+
+-- Get current GC rank
+local function GetGCRank()
+    local gc = Player.GrandCompany
+    if gc == 1 then return Player.GCRankMaelstrom
+    elseif gc == 2 then return Player.GCRankTwinAdders
+    elseif gc == 3 then return Player.GCRankImmortalFlames
+    end
+    return 0
+end
+
+-- Check if a hunt log rank is complete (reads from UI)
+-- class: 0-8 for jobs, 9 for GC
+-- rank: 0-4 for jobs, 0-2 for GC (0-indexed)
+local function IsHuntLogComplete(class, rank)
+    -- Open hunt log to the specific class/rank
+    yield("/huntinglog")
+    Sleep(0.5)
+
+    local addon = Addons.GetAddon("MonsterNote")
+    local waitCount = 0
+    while (not addon or not addon.Ready) and waitCount < 15 do
+        Sleep(0.2)
+        addon = Addons.GetAddon("MonsterNote")
+        waitCount = waitCount + 1
+    end
+
+    if not addon or not addon.Ready then
+        Debug("Hunt log not ready")
+        return false
+    end
+
+    -- Select the class tab (callback to switch)
+    yield("/callback MonsterNote true 0 " .. class)
+    Sleep(0.3)
+
+    -- Read the rank completion text (node 33, rank index, child 3)
+    -- Format is "X/Y" where X is completed entries, Y is total
+    local rankNode = addon:GetNode(33, rank, 3)
+    local rankText = rankNode and rankNode.Text or ""
+
+    -- Close hunt log
+    yield("/callback MonsterNote true -1")
+    Sleep(0.2)
+
+    -- Parse "X/Y" format
+    local completed, total = rankText:match("(%d+)/(%d+)")
+    local classNameDisplay = ClassNames[class] or ("class" .. class)
+    if completed and total and completed == total then
+        Debug(classNameDisplay .. " rank " .. (rank + 1) .. " is COMPLETE (" .. rankText .. ")")
+        return true
+    else
+        Debug(classNameDisplay .. " rank " .. (rank + 1) .. " incomplete (" .. rankText .. ")")
+        return false
+    end
+end
+
+-- Get the next incomplete GC hunt log rank (1, 2, or 3), or nil if all complete
+local function GetNextIncompleteGCRank()
+    local gcRank = GetGCRank()
+
+    -- Check rank 1 (index 0)
+    if not IsHuntLogComplete(9, 0) then
+        return 1
+    end
+
+    -- Check rank 2 (index 1) - need GC rank 5+ to access
+    if gcRank >= 5 and not IsHuntLogComplete(9, 1) then
+        return 2
+    end
+
+    -- Check rank 3 (index 2) - need GC rank 9+ to access
+    if gcRank >= 9 and not IsHuntLogComplete(9, 2) then
+        return 3
+    end
+
+    return nil  -- All complete or can't access higher ranks
+end
+
+-- Check if rank 8 quest is complete
+local function IsRank8QuestComplete()
+    local gc = Player.GrandCompany
+    if gc == 0 then return false end
+    return Quests.IsQuestComplete(GCQuestData.rank8Quests[gc])
+end
+
+-- Check if rank 9 quest is complete
+local function IsRank9QuestComplete()
+    local gc = Player.GrandCompany
+    if gc == 0 then return false end
+    return Quests.IsQuestComplete(GCQuestData.rank9Quests[gc])
+end
+
+-- Get the dungeon needed for a specific hunt log rank
+local function GetDungeonForRank(rank)
+    local gc = Player.GrandCompany
+    local data = GCDungeonData[rank]
+    if not data then return nil end
+
+    -- Immortal Flames uses Cutter's Cry for rank 2
+    if rank == 2 and gc == 3 then
+        return data.flames, data.flamesTerritoryId
+    end
+    return data.default, data.territoryId
+end
+
+-- Check if AutoDuty is available
+local function IsAutoDutyAvailable()
+    if not IPC.AutoDuty then
+        Debug("AutoDuty IPC not available")
+        return false
+    end
+    return true
+end
+
+-- Run a dungeon via AutoDuty
+local function RunDungeon(dungeonName, contentId)
+    if not IsAutoDutyAvailable() then return false end
+
+    Debug("Starting dungeon: " .. dungeonName .. " (content ID " .. tostring(contentId) .. ")")
+
+    -- Check if AutoDuty has a path for this content
+    if contentId and IPC.AutoDuty.ContentHasPath then
+        local hasPath = IPC.AutoDuty.ContentHasPath(contentId)
+        Debug("AutoDuty has path for " .. contentId .. ": " .. tostring(hasPath))
+        if not hasPath then
+            Debug("WARNING: AutoDuty does not have a path for this dungeon!")
+        end
+    end
+
+    -- Start AutoDuty for the dungeon using chat command
+    -- Format: /autoduty run <mode> <duty_id> <loops>
+    if contentId then
+        Debug("Using /autoduty run support " .. contentId .. " 1")
+        yield("/autoduty run support " .. contentId .. " 1")
+    else
+        -- Fallback to dungeon name if no content ID
+        Debug("No content ID, using dungeon name")
+        yield("/autoduty run support \"" .. dungeonName .. "\" 1")
+    end
+    Sleep(3.0)
+
+    -- Check if AutoDuty started
+    if IPC.AutoDuty.IsStopped then
+        local isStopped = IPC.AutoDuty.IsStopped()
+        Debug("AutoDuty IsStopped: " .. tostring(isStopped))
+    end
+
+    -- Wait for duty to start
+    local waitCount = 0
+    while not Svc.Condition[34] and waitCount < 120 do  -- Condition 34 = In Duty
+        Sleep(1.0)
+        waitCount = waitCount + 1
+        if waitCount % 30 == 0 then
+            Debug("Waiting for duty queue... (" .. waitCount .. "s)")
+        end
+    end
+
+    if not Svc.Condition[34] then
+        Debug("Failed to enter dungeon")
+        return false
+    end
+
+    Debug("Entered dungeon, AutoDuty running...")
+
+    -- Wait for duty to complete
+    while Svc.Condition[34] or Svc.Condition[56] do  -- 34=InDuty, 56=InDutyQueue
+        Sleep(5.0)
+    end
+
+    -- Wait for zone transition
+    Sleep(3.0)
+    while not Player.Available do
+        Sleep(0.5)
+    end
+
+    Debug("Dungeon complete!")
+    return true
+end
+
+-- Start a quest via Questionable
+-- questId: Game quest ID (for completion check)
+-- qstId: Questionable internal quest ID (for /qst command)
+-- questName: Quest name (for logging)
+local function StartQuestViaQuestionable(questId, qstId, questName)
+    Debug("StartQuestViaQuestionable: game ID=" .. questId .. ", qst ID=" .. tostring(qstId) .. " (" .. (questName or "no name") .. ")")
+
+    if Quests.IsQuestComplete(questId) then
+        Debug("Quest " .. questId .. " already complete")
+        return true
+    end
+
+    -- Check if we have a Questionable quest ID
+    if not qstId then
+        Debug("No Questionable quest ID provided for " .. (questName or questId) .. " - cannot proceed")
+        return false
+    end
+
+    -- Check if Questionable IPC is available (safely)
+    local hasQuestionable = pcall(function() return IPC.Questionable end)
+    if not hasQuestionable or not IPC.Questionable then
+        Debug("Questionable plugin not available - cannot start quest " .. questId)
+        return false
+    end
+
+    -- Set the quest for Questionable using IPC with Questionable's ID
+    Debug("Setting quest priority via IPC with qstId " .. qstId)
+    local success, err = pcall(function()
+        IPC.Questionable.AddQuestPriority(tostring(qstId))
+    end)
+    if success then
+        Debug("AddQuestPriority called successfully")
+    else
+        Debug("AddQuestPriority failed: " .. tostring(err) .. " - falling back to /qst next")
+        yield("/qst next " .. qstId)
+    end
+    Sleep(0.5)
+
+    Debug("Starting Questionable...")
+    yield("/qst start")
+    Sleep(2.0)
+
+    -- Verify Questionable started (safely)
+    local isRunning = pcall(function() return IPC.Questionable.IsRunning() end)
+    if not isRunning then
+        Debug("Questionable did not start, retrying...")
+        yield("/qst reload")
+        Sleep(1.0)
+        yield("/qst start")
+        Sleep(2.0)
+    end
+
+    -- Wait for Questionable to complete the quest
+    local waitCount = 0
+    local maxWait = 600  -- 10 minutes max
+    while waitCount < maxWait do
+        -- Check if quest is complete
+        if Quests.IsQuestComplete(questId) then
+            Debug("Quest " .. questId .. " complete!")
+            -- Stop Questionable and wait for it to fully stop
+            yield("/qst stop")
+            Sleep(1.0)
+            -- Verify it stopped
+            local stopWait = 0
+            while IPC.Questionable.IsRunning() and stopWait < 10 do
+                Debug("Waiting for Questionable to stop...")
+                yield("/qst stop")
+                Sleep(1.0)
+                stopWait = stopWait + 1
+            end
+            Debug("Questionable stopped, ready for dungeon")
+            return true
+        end
+
+        -- Check if Questionable is still running
+        if not IPC.Questionable.IsRunning() then
+            Debug("Questionable stopped unexpectedly, restarting...")
+            yield("/qst start")
+            Sleep(2.0)
+        end
+
+        Sleep(5.0)
+        waitCount = waitCount + 5
+        if waitCount % 60 == 0 then
+            Debug("Quest in progress... (" .. waitCount .. "s)")
+        end
+    end
+
+    Debug("Quest " .. questId .. " timed out")
+    -- Stop Questionable
+    yield("/qst stop")
+    Sleep(1.0)
+    local stopWait = 0
+    while IPC.Questionable.IsRunning() and stopWait < 10 do
+        yield("/qst stop")
+        Sleep(1.0)
+        stopWait = stopWait + 1
+    end
+    return false
+end
+
+-- Do GC dungeon for current hunt log rank
+local function DoGCDungeon(rank)
+    local gc = Player.GrandCompany
+    local data = GCDungeonData[rank]
+    if not data then
+        Debug("No dungeon data for rank " .. rank)
+        return false
+    end
+
+    -- Get dungeon name, content ID, and unlock quest based on GC
+    local dungeonName, contentId, unlockQuest, unlockQuestQst, unlockQuestName
+    if rank == 2 and gc == 3 then  -- Immortal Flames rank 2
+        dungeonName = data.flames
+        contentId = data.flamesContentId
+        unlockQuest = data.flamesUnlockQuest
+        unlockQuestQst = data.flamesUnlockQuestQst
+        unlockQuestName = data.flamesUnlockQuestName
+    else
+        dungeonName = data.default
+        contentId = data.contentId
+        unlockQuest = data.unlockQuest
+        unlockQuestQst = data.unlockQuestQst
+        unlockQuestName = data.unlockQuestName
+    end
+
+    -- Check if dungeon is unlocked
+    Debug("Checking unlock quest " .. tostring(unlockQuest) .. " (" .. (unlockQuestName or "?") .. ")")
+    if unlockQuest then
+        local isComplete = Quests.IsQuestComplete(unlockQuest)
+        Debug("Quest " .. unlockQuest .. " complete: " .. tostring(isComplete))
+        if not isComplete then
+            Debug("Dungeon " .. dungeonName .. " not unlocked, starting unlock quest...")
+            local unlockSuccess = StartQuestViaQuestionable(unlockQuest, unlockQuestQst, unlockQuestName)
+            if not unlockSuccess then
+                Debug("Failed to complete unlock quest")
+                return false
+            end
+        else
+            Debug("Dungeon already unlocked, skipping Questionable")
+        end
+    else
+        Debug("No unlock quest required for " .. dungeonName)
+    end
+
+    Debug("GC Dungeon for rank " .. rank .. ": " .. dungeonName)
+    return RunDungeon(dungeonName, contentId)
+end
+
+-- Check what's blocking GC rank up
+local function CheckRankUpRequirements()
+    local gc = Player.GrandCompany
+    local rank = GetGCRank()
+    local nextRank = rank + 1
+
+    Debug("Current GC: " .. gc .. ", Rank: " .. rank .. ", Next: " .. nextRank)
+
+    if nextRank == 5 then
+        -- Need hunt log 1 complete
+        Debug("Rank 5 requires GC hunt log 1 complete")
+    elseif nextRank == 8 then
+        if not IsRank8QuestComplete() then
+            Debug("Rank 8 requires 'Shadows Uncast' quest (ID: " .. GCQuestData.rank8Quests[gc] .. ")")
+            return false, "rank8quest"
+        end
+    elseif nextRank == 9 then
+        if not IsRank9QuestComplete() then
+            Debug("Rank 9 requires 'Gilding the Bilious' quest (ID: " .. GCQuestData.rank9Quests[gc] .. ")")
+            return false, "rank9quest"
+        end
+        -- Also need hunt log 2 complete
+        Debug("Rank 9 also requires GC hunt log 2 complete")
+    end
+
+    return true, nil
+end
+
+-- Do extra dungeons (Dzemael Darkhold / Aurum Vale) for rank 9
+local function DoExtraDungeons()
+    local gc = Player.GrandCompany
+    local extraQuestIds = GCQuestData.extraQuests[gc]
+
+    for i, dungeon in ipairs(ExtraDungeons) do
+        local questId = extraQuestIds[i]
+        if not Quests.IsQuestComplete(questId) then
+            Debug("Need to complete: " .. dungeon.name .. " (Quest " .. questId .. ")")
+
+            -- Start quest if not accepted
+            if not Quests.IsQuestAccepted(questId) then
+                StartQuestViaQuestionable(questId)
+            end
+
+            -- Run the dungeon
+            RunDungeon(dungeon.name, dungeon.contentId)
+        else
+            Debug(dungeon.name .. " quest already complete")
+        end
+    end
+end
+
+-------------------------------------------------
 -- MAIN LOOP
 -------------------------------------------------
 Debug("Starting hunt log automation...")
@@ -14052,7 +14690,6 @@ while true do
         break
     end
 
-    Debug("Found " .. #incompleteMobs .. " incomplete entries")
 
     -- Find first mob with known location
     local targetMob = nil
@@ -14065,7 +14702,6 @@ while true do
             targetLocation = loc
             break
         else
-            Debug("  " .. mob.name .. " - no location data, skipping")
         end
     end
 
@@ -14078,7 +14714,7 @@ while true do
     Debug("=== Target: " .. targetMob.name .. " [" .. targetMob.current .. "/" .. targetMob.total .. "] ===")
 
     -- Navigate to spawn
-    if not NavigateTo(targetLocation) then
+    if not NavigateTo(targetLocation, targetMob.name) then
         Debug("Navigation failed, skipping...")
     else
         -- Kill mobs
@@ -14093,6 +14729,68 @@ while true do
 end
 
 Debug("")
-Debug("=== AutoHuntLog Complete ===")
+Debug("=== Overworld Hunting Complete ===")
 Debug("Mobs completed: " .. mobsCompleted)
 Debug("Total kills: " .. totalKills)
+
+-------------------------------------------------
+-- GC DUNGEON PHASE
+-------------------------------------------------
+-- Only runs for GC hunt logs when Settings.do_dungeons is enabled
+
+if Settings.hunt_type == "gc" and Settings.do_dungeons and Player.GrandCompany > 0 then
+    Debug("")
+    Debug("=== Checking GC Dungeon Requirements ===")
+
+    local incompleteRank = GetNextIncompleteGCRank()
+
+    if incompleteRank and (not Settings.stop_at_rank_two or incompleteRank <= 2) then
+        Debug("GC hunt log rank " .. incompleteRank .. " still incomplete, checking dungeon...")
+
+        -- DoGCDungeon handles unlock quests and running the dungeon
+        local success = DoGCDungeon(incompleteRank)
+        if success then
+            Debug("Dungeon complete!")
+        else
+            Debug("Dungeon failed or was skipped")
+        end
+    else
+        if incompleteRank then
+            Debug("GC rank " .. incompleteRank .. " incomplete but stop_at_rank_two is enabled")
+        else
+            Debug("All accessible GC hunt log ranks complete!")
+        end
+    end
+end
+
+-------------------------------------------------
+-- GC RANK UP PHASE
+-------------------------------------------------
+if Settings.hunt_type == "gc" and Settings.do_rankup and Player.GrandCompany > 0 then
+    Debug("")
+    Debug("=== Checking GC Rank Up ===")
+    local canRankUp, blocker = CheckRankUpRequirements()
+    if canRankUp then
+        Debug("Ready to rank up! (Manual rank-up required for now)")
+        -- TODO: Implement auto rank-up via GC officer
+    else
+        Debug("Cannot rank up yet: " .. (blocker or "unknown blocker"))
+    end
+end
+
+-------------------------------------------------
+-- EXTRA DUNGEONS (Rank 9)
+-------------------------------------------------
+if Settings.do_extra_dungeons and Player.GrandCompany > 0 then
+    local gcRank = GetGCRank()
+
+    -- Only do extra dungeons if rank 2 log is complete and we're working toward rank 9
+    if IsHuntLogComplete(9, 1) and gcRank >= 5 then
+        Debug("")
+        Debug("=== Extra Dungeons for Rank 9 ===")
+        DoExtraDungeons()
+    end
+end
+
+Debug("")
+Debug("=== AutoHuntLog Complete ===")
